@@ -94,8 +94,8 @@ export async function detectVocals(
   const maxEnergy = sortedEnergy[sortedEnergy.length - 1];
   
   // Lower threshold: closer to median to catch quieter vocals
-  // Use 20% of dynamic range above p40
-  const threshold = p40 + (p90 - p40) * 0.2;
+  // Use 10% of dynamic range above p40 (more aggressive)
+  const threshold = p40 + (p90 - p40) * 0.1;
   
   // Vocal frequency range (broader to catch more voices)
   const vocalZCRMin = 0.001;

@@ -20,6 +20,7 @@ export interface KaraokeManifest {
   duration: number;
   audio: string;
   lyrics: string;
+  files?: string[];
   bpm?: number;
   key?: string;
   genre?: string;

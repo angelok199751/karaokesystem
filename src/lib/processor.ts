@@ -65,35 +65,20 @@ export async function processKaraoke(
     onProgress([...steps]);
   });
   
-  // Post-process: 
-  // 1. If first line starts after 5 seconds, pull it back
-  // 2. Show first line 1.5s before vocal starts (karaoke convention)
-  if (alignment.lines.length > 0) {
-    const firstLine = alignment.lines[0];
-    
-    if (firstLine.start > 5) {
-      // Drastic case: vocal detected very late, shift everything back
-      const offset = firstLine.start - 2;
-      for (const line of alignment.lines) {
-        line.start = Math.max(0, line.start - offset);
-        line.end = Math.max(line.start + 0.5, line.end - offset);
-      }
-    } else if (firstLine.start > 1.5) {
-      // Normal case: show first line 1.5s before vocal starts
-      // Extend the first line's start earlier (preview time)
-      alignment.lines[0].start = Math.max(0, firstLine.start - 1.5);
-    }
+  // Post-process: add preview time for karaoke display
+  // Show first line 1.5s before vocal starts
+  if (alignment.lines.length > 0 && alignment.lines[0].start > 0.3) {
+    alignment.lines[0].start = Math.max(0, alignment.lines[0].start - 1.5);
   }
   
-  // Also add preview time for subsequent lines (0.5s before each line)
+  // Add preview time between lines with gaps
   for (let i = 1; i < alignment.lines.length; i++) {
     const line = alignment.lines[i];
     const prevLine = alignment.lines[i - 1];
     const gap = line.start - prevLine.end;
     
-    // If there's a gap > 1s, show the next line 0.8s early
-    if (gap > 1) {
-      alignment.lines[i].start = Math.max(prevLine.end + 0.2, line.start - 0.8);
+    if (gap > 0.5) {
+      alignment.lines[i].start = Math.max(prevLine.end + 0.1, line.start - 0.8);
     }
   }
   

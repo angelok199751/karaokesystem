@@ -22,13 +22,15 @@ export async function buildKaraokeFile(options: BuildOptions): Promise<Blob> {
   const zip = new JSZip();
   
   // Create manifest
+  const audioFileName = 'audio' + getExtension(options.audioFileName);
   const manifest: KaraokeManifest = {
     format: 'karaoke',
     version: 1,
     title: options.title,
     duration: options.duration,
-    audio: 'audio' + getExtension(options.audioFileName),
+    audio: audioFileName,
     lyrics: 'lyrics.json',
+    files: [audioFileName, 'lyrics.json', 'manifest.json'],
   };
   
   // Create lyrics data
