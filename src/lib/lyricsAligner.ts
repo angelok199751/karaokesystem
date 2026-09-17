@@ -22,33 +22,8 @@ export function alignLyrics(
     return fallbackAlignment(nonEmptyLines, duration);
   }
   
-  // Compensate for late vocal detection
+  // Compensate for late vocal detection (moderate adjustment)
   segments = compensateLateStart(segments, vocalMap.energyProfile, vocalMap.sampleRate, vocalMap.windowSize, duration);
-  
-  // If first segment starts after 1.5 seconds, prepend early lines distributed evenly
-  if (segments.length > 0 && segments[0].start > 1.5) {
-    const earlyLinesCount = Math.min(3, Math.floor(nonEmptyLines.length * 0.15));
-    const earlyDuration = segments[0].start;
-    const timePerEarlyLine = earlyDuration / earlyLinesCount;
-    
-    const earlyLines: LyricLine[] = [];
-    for (let i = 0; i < earlyLinesCount; i++) {
-      earlyLines.push({
-        text: nonEmptyLines[i].trim(),
-        start: Math.round(i * timePerEarlyLine * 100) / 100,
-        end: Math.round((i + 0.85) * timePerEarlyLine * 100) / 100,
-      });
-    }
-    
-    const remainingLines = nonEmptyLines.slice(earlyLinesCount);
-    const result = processWithSegments(remainingLines, segments, duration);
-    
-    return {
-      lines: [...earlyLines, ...result.lines],
-      unmatchedSegments: result.unmatchedSegments,
-      unmatchedLines: result.unmatchedLines,
-    };
-  }
   
   return processWithSegments(nonEmptyLines, segments, duration);
 }
@@ -142,20 +117,21 @@ function compensateLateStart(
   const hopSize = Math.floor(windowSize / 2);
   const firstSegStart = segments[0].start;
   
-  if (firstSegStart < 2) return segments;
+  // Only compensate if first segment starts after 5 seconds (clearly late)
+  if (firstSegStart < 5) return segments;
   
   const sortedEnergy = [...energyProfile].sort((a, b) => a - b);
   const medianEnergy = sortedEnergy[Math.floor(sortedEnergy.length * 0.5)];
-  const threshold = medianEnergy * 1.2;
+  const threshold = medianEnergy * 1.3;
   
   let firstEnergyIdx = 0;
   for (let i = 0; i < energyProfile.length; i++) {
     if (energyProfile[i] > threshold) {
       let sustained = 0;
-      for (let j = i; j < Math.min(i + 15, energyProfile.length); j++) {
+      for (let j = i; j < Math.min(i + 20, energyProfile.length); j++) {
         if (energyProfile[j] > threshold) sustained++;
       }
-      if (sustained >= 3) {
+      if (sustained >= 5) {
         firstEnergyIdx = i;
         break;
       }
@@ -164,11 +140,12 @@ function compensateLateStart(
   
   const firstEnergyTime = (firstEnergyIdx * hopSize) / sampleRate;
   
-  if (firstEnergyTime < firstSegStart - 0.5) {
+  // Pull back to where energy actually starts (with small buffer)
+  if (firstEnergyTime < firstSegStart - 1) {
     const adjusted = [...segments];
     adjusted[0] = {
       ...adjusted[0],
-      start: Math.max(0, firstEnergyTime - 0.1),
+      start: Math.max(0, firstEnergyTime),
     };
     return adjusted;
   }
@@ -180,7 +157,8 @@ function fallbackAlignment(
   lines: string[],
   duration: number
 ): AlignmentResult {
-  const startTime = duration * 0.03;
+  // Skip first 5% for intro
+  const startTime = duration * 0.05;
   const endTime = duration * 0.97;
   const availableTime = endTime - startTime;
   

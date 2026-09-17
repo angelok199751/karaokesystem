@@ -93,9 +93,8 @@ export async function detectVocals(
   const p90 = sortedEnergy[Math.floor(sortedEnergy.length * 0.9)];
   const maxEnergy = sortedEnergy[sortedEnergy.length - 1];
   
-  // Lower threshold: closer to median to catch quieter vocals
-  // Use 10% of dynamic range above p40 (more aggressive)
-  const threshold = p40 + (p90 - p40) * 0.1;
+  // Threshold: 15% of dynamic range above p40 (balanced)
+  const threshold = p40 + (p90 - p40) * 0.15;
   
   // Vocal frequency range (broader to catch more voices)
   const vocalZCRMin = 0.001;
@@ -206,13 +205,9 @@ function applyOnsetDetection(
       const currentEnergy = energyProfile[i];
       const prevEnergy = energyProfile[i - lookback];
       
-      // If energy jumped significantly, mark as vocal
-      if (currentEnergy > prevEnergy * 2 && currentEnergy > threshold * 0.7) {
-        // Check if surrounding frames also have vocal-range energy
-        const zcr = currentEnergy > 0 ? 1 : 0; // simplified check
-        if (currentEnergy > threshold * 0.5) {
-          result[i] = true;
-        }
+      // If energy jumped significantly AND above threshold, mark as vocal
+      if (currentEnergy > prevEnergy * 2.5 && currentEnergy > threshold * 0.8) {
+        result[i] = true;
       }
     }
   }

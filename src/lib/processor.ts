@@ -66,9 +66,14 @@ export async function processKaraoke(
   });
   
   // Post-process: add preview time for karaoke display
-  // Show first line 1.5s before vocal starts
-  if (alignment.lines.length > 0 && alignment.lines[0].start > 0.3) {
-    alignment.lines[0].start = Math.max(0, alignment.lines[0].start - 1.5);
+  // Show first line 1.5s before vocal starts (but not before 0)
+  if (alignment.lines.length > 0) {
+    const firstLine = alignment.lines[0];
+    if (firstLine.start > 1.5) {
+      alignment.lines[0].start = firstLine.start - 1.5;
+    } else if (firstLine.start > 0.5) {
+      alignment.lines[0].start = 0;
+    }
   }
   
   // Add preview time between lines with gaps
@@ -77,7 +82,7 @@ export async function processKaraoke(
     const prevLine = alignment.lines[i - 1];
     const gap = line.start - prevLine.end;
     
-    if (gap > 0.5) {
+    if (gap > 0.8) {
       alignment.lines[i].start = Math.max(prevLine.end + 0.1, line.start - 0.8);
     }
   }
