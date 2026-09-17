@@ -1,16 +1,6 @@
 import { LyricLine } from './types';
 import { VocalMap } from './vocalDetector';
 
-/**
- * Lyrics Alignment Module
- * 
- * Maps text lines to vocal segments detected in the audio.
- * Strategy:
- * 1. Parse lyrics into non-empty lines
- * 2. Match lines to vocal segments proportionally
- * 3. Handle cases where segment count differs from line count
- */
-
 export interface AlignmentResult {
   lines: LyricLine[];
   unmatchedSegments: number;
@@ -23,24 +13,54 @@ export function alignLyrics(
   duration: number,
   onProgress?: (progress: number) => void
 ): AlignmentResult {
-  // Parse lyrics - split by newlines, keep empty lines as section markers
   const allLines = rawText.split('\n');
   const nonEmptyLines = allLines.filter(line => line.trim().length > 0);
   
-  const segments = vocalMap.segments;
+  let segments = [...vocalMap.segments];
   
   if (segments.length === 0) {
-    // Fallback: distribute lines evenly across the duration
     return fallbackAlignment(nonEmptyLines, duration);
   }
   
-  // Calculate total vocal time
-  const totalVocalTime = segments.reduce((sum, seg) => sum + (seg.end - seg.start), 0);
+  // Compensate for late vocal detection
+  segments = compensateLateStart(segments, vocalMap.energyProfile, vocalMap.sampleRate, vocalMap.windowSize, duration);
   
+  // If first segment starts after 1.5 seconds, prepend early lines distributed evenly
+  if (segments.length > 0 && segments[0].start > 1.5) {
+    const earlyLinesCount = Math.min(3, Math.floor(nonEmptyLines.length * 0.15));
+    const earlyDuration = segments[0].start;
+    const timePerEarlyLine = earlyDuration / earlyLinesCount;
+    
+    const earlyLines: LyricLine[] = [];
+    for (let i = 0; i < earlyLinesCount; i++) {
+      earlyLines.push({
+        text: nonEmptyLines[i].trim(),
+        start: Math.round(i * timePerEarlyLine * 100) / 100,
+        end: Math.round((i + 0.85) * timePerEarlyLine * 100) / 100,
+      });
+    }
+    
+    const remainingLines = nonEmptyLines.slice(earlyLinesCount);
+    const result = processWithSegments(remainingLines, segments, duration);
+    
+    return {
+      lines: [...earlyLines, ...result.lines],
+      unmatchedSegments: result.unmatchedSegments,
+      unmatchedLines: result.unmatchedLines,
+    };
+  }
+  
+  return processWithSegments(nonEmptyLines, segments, duration);
+}
+
+function processWithSegments(
+  nonEmptyLines: string[],
+  segments: { start: number; end: number; energy: number }[],
+  duration: number
+): AlignmentResult {
   const lines: LyricLine[] = [];
   
   if (segments.length >= nonEmptyLines.length) {
-    // More segments than lines: distribute segments among lines
     const segmentsPerLine = Math.ceil(segments.length / nonEmptyLines.length);
     
     for (let i = 0; i < nonEmptyLines.length; i++) {
@@ -57,15 +77,9 @@ export function alignLyrics(
         start: Math.round(lineStart * 100) / 100,
         end: Math.round(lineEnd * 100) / 100,
       });
-      
-      if (onProgress) onProgress(i / nonEmptyLines.length);
     }
   } else {
-    // More lines than segments: distribute lines among segments proportionally
-    // Use energy-weighted distribution
     const totalEnergy = segments.reduce((sum, seg) => sum + seg.energy, 0);
-    
-    let currentSegment = 0;
     let linesAssigned = 0;
     
     for (let i = 0; i < segments.length && linesAssigned < nonEmptyLines.length; i++) {
@@ -73,12 +87,9 @@ export function alignLyrics(
       const segDuration = seg.end - seg.start;
       const segWeight = totalEnergy > 0 ? seg.energy / totalEnergy : 1 / segments.length;
       
-      // How many lines should this segment get?
       const linesForSegment = Math.max(1, Math.round(segWeight * nonEmptyLines.length));
-      
-      const linesStart = linesAssigned;
       const linesEnd = Math.min(linesAssigned + linesForSegment, nonEmptyLines.length);
-      const actualLines = linesEnd - linesStart;
+      const actualLines = linesEnd - linesAssigned;
       
       if (actualLines > 0 && segDuration > 0) {
         const timePerLine = segDuration / actualLines;
@@ -88,7 +99,7 @@ export function alignLyrics(
           const lineEnd = seg.start + (j + 1) * timePerLine;
           
           lines.push({
-            text: nonEmptyLines[linesStart + j].trim(),
+            text: nonEmptyLines[linesAssigned + j].trim(),
             start: Math.round(lineStart * 100) / 100,
             end: Math.round(lineEnd * 100) / 100,
           });
@@ -96,11 +107,8 @@ export function alignLyrics(
           linesAssigned++;
         }
       }
-      
-      if (onProgress) onProgress(i / segments.length);
     }
     
-    // Handle remaining lines
     while (linesAssigned < nonEmptyLines.length) {
       const lastLine = lines.length > 0 ? lines[lines.length - 1] : null;
       const startTime = lastLine ? lastLine.end + 0.1 : 0;
@@ -122,13 +130,58 @@ export function alignLyrics(
   };
 }
 
+function compensateLateStart(
+  segments: { start: number; end: number; energy: number }[],
+  energyProfile: number[],
+  sampleRate: number,
+  windowSize: number,
+  duration: number
+): { start: number; end: number; energy: number }[] {
+  if (segments.length === 0) return segments;
+  
+  const hopSize = Math.floor(windowSize / 2);
+  const firstSegStart = segments[0].start;
+  
+  if (firstSegStart < 2) return segments;
+  
+  const sortedEnergy = [...energyProfile].sort((a, b) => a - b);
+  const medianEnergy = sortedEnergy[Math.floor(sortedEnergy.length * 0.5)];
+  const threshold = medianEnergy * 1.2;
+  
+  let firstEnergyIdx = 0;
+  for (let i = 0; i < energyProfile.length; i++) {
+    if (energyProfile[i] > threshold) {
+      let sustained = 0;
+      for (let j = i; j < Math.min(i + 15, energyProfile.length); j++) {
+        if (energyProfile[j] > threshold) sustained++;
+      }
+      if (sustained >= 3) {
+        firstEnergyIdx = i;
+        break;
+      }
+    }
+  }
+  
+  const firstEnergyTime = (firstEnergyIdx * hopSize) / sampleRate;
+  
+  if (firstEnergyTime < firstSegStart - 0.5) {
+    const adjusted = [...segments];
+    adjusted[0] = {
+      ...adjusted[0],
+      start: Math.max(0, firstEnergyTime - 0.1),
+    };
+    return adjusted;
+  }
+  
+  return segments;
+}
+
 function fallbackAlignment(
   lines: string[],
   duration: number
 ): AlignmentResult {
-  // Skip first 10% of audio (intro) and last 5% (outro)
-  const startTime = duration * 0.1;
-  const endTime = duration * 0.95;
+  const startTime = duration * 0.03;
+  const endTime = duration * 0.97;
   const availableTime = endTime - startTime;
   
   const timePerLine = availableTime / lines.length;
@@ -138,7 +191,7 @@ function fallbackAlignment(
     result.push({
       text: lines[i].trim(),
       start: Math.round((startTime + i * timePerLine) * 100) / 100,
-      end: Math.round((startTime + (i + 0.8) * timePerLine) * 100) / 100,
+      end: Math.round((startTime + (i + 0.85) * timePerLine) * 100) / 100,
     });
   }
   
