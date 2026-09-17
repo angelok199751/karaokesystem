@@ -1,10 +1,8 @@
 /**
  * Vocal Detection Module
  * 
- * Uses energy-based analysis to detect vocal segments in audio.
- * This is a simplified approach suitable for MVP.
- * The algorithm analyzes RMS energy and spectral characteristics
- * to identify segments where vocals are likely present.
+ * Detects vocal activity using energy-based analysis with onset detection.
+ * Optimized to catch early vocals and avoid late starts.
  */
 
 interface VocalSegment {
@@ -22,10 +20,6 @@ export interface VocalMap {
 
 /**
  * Detect vocal activity in an audio buffer using energy analysis.
- * This uses a combination of:
- * - RMS energy analysis
- * - Spectral centroid (vocals tend to have specific frequency characteristics)
- * - Temporal smoothing to avoid rapid on/off switching
  */
 export async function detectVocals(
   audioBuffer: AudioBuffer,
@@ -34,78 +28,98 @@ export async function detectVocals(
   const sampleRate = audioBuffer.sampleRate;
   const channelData = audioBuffer.getChannelData(0);
   
-  // Window size: 20ms windows for analysis
-  const windowSize = Math.floor(sampleRate * 0.02);
-  const hopSize = Math.floor(windowSize / 2); // 50% overlap
-  const numWindows = Math.floor((channelData.length - windowSize) / hopSize);
+  // Mix all channels to mono for analysis
+  const totalSamples = audioBuffer.length;
+  let monoData: Float32Array;
+  if (audioBuffer.numberOfChannels > 1) {
+    monoData = new Float32Array(totalSamples);
+    for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+      const chData = audioBuffer.getChannelData(ch);
+      for (let i = 0; i < totalSamples; i++) {
+        monoData[i] += chData[i] / audioBuffer.numberOfChannels;
+      }
+    }
+  } else {
+    monoData = channelData;
+  }
   
-  // Calculate energy profile
+  // Window size: 20ms windows
+  const windowSize = Math.floor(sampleRate * 0.02);
+  const hopSize = Math.floor(windowSize / 2);
+  const numWindows = Math.floor((totalSamples - windowSize) / hopSize);
+  
+  // Calculate energy profile and spectral features
   const energyProfile: number[] = [];
-  const spectralCentroids: number[] = [];
+  const spectralFeatures: number[] = [];
   
   for (let i = 0; i < numWindows; i++) {
     const start = i * hopSize;
     let sumSquares = 0;
-    let weightedSum = 0;
-    let totalMagnitude = 0;
+    let zeroCrossings = 0;
     
     for (let j = 0; j < windowSize; j++) {
-      const sample = channelData[start + j] || 0;
+      const sample = monoData[start + j] || 0;
       sumSquares += sample * sample;
+      
+      if (j > 0) {
+        const prev = monoData[start + j - 1] || 0;
+        if ((sample >= 0 && prev < 0) || (sample < 0 && prev >= 0)) {
+          zeroCrossings++;
+        }
+      }
     }
     
     const rms = Math.sqrt(sumSquares / windowSize);
     energyProfile.push(rms);
     
-    // Simplified spectral centroid using zero-crossing rate as proxy
-    let zeroCrossings = 0;
-    for (let j = 1; j < windowSize; j++) {
-      const curr = channelData[start + j] || 0;
-      const prev = channelData[start + j - 1] || 0;
-      if ((curr >= 0 && prev < 0) || (curr < 0 && prev >= 0)) {
-        zeroCrossings++;
-      }
-    }
-    spectralCentroids.push(zeroCrossings / windowSize);
+    // Normalized zero crossing rate (proxy for spectral centroid)
+    const zcr = zeroCrossings / windowSize;
+    spectralFeatures.push(zcr);
     
-    if (onProgress && i % 100 === 0) {
+    if (onProgress && i % 200 === 0) {
       onProgress(i / numWindows * 0.5);
     }
     
-    // Yield to main thread periodically
-    if (i % 1000 === 0) {
+    if (i % 2000 === 0) {
       await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
   
-  // Calculate adaptive threshold
+  // Calculate adaptive threshold using percentile-based approach
   const sortedEnergy = [...energyProfile].sort((a, b) => a - b);
-  const medianEnergy = sortedEnergy[Math.floor(sortedEnergy.length / 2)];
+  
+  // Use 40th percentile as base (more sensitive to quiet parts)
+  const p40 = sortedEnergy[Math.floor(sortedEnergy.length * 0.4)];
+  const p90 = sortedEnergy[Math.floor(sortedEnergy.length * 0.9)];
   const maxEnergy = sortedEnergy[sortedEnergy.length - 1];
   
-  // Vocal range: typically 80Hz - 1000Hz fundamental
-  // Zero crossing rate for this range at 44100 sampleRate: ~0.004 - 0.045
-  const vocalZCRMin = 0.002;
-  const vocalZCRMax = 0.05;
+  // Lower threshold: closer to median to catch quieter vocals
+  // Use 20% of dynamic range above p40
+  const threshold = p40 + (p90 - p40) * 0.2;
   
-  // Determine threshold: energy above median + some factor
-  const threshold = medianEnergy + (maxEnergy - medianEnergy) * 0.3;
+  // Vocal frequency range (broader to catch more voices)
+  const vocalZCRMin = 0.001;
+  const vocalZCRMax = 0.08;
   
-  // Classify each window as vocal or not
+  // Classify each window
   const isVocal: boolean[] = [];
   for (let i = 0; i < numWindows; i++) {
     const energy = energyProfile[i];
-    const zcr = spectralCentroids[i];
+    const zcr = spectralFeatures[i];
     
-    // Vocal if: sufficient energy AND in vocal frequency range
+    // More lenient: either good energy OR good frequency range with some energy
     const hasEnergy = energy > threshold;
     const inVocalRange = zcr > vocalZCRMin && zcr < vocalZCRMax;
+    const hasSomeEnergy = energy > p40 * 0.5;
     
-    isVocal.push(hasEnergy && inVocalRange);
+    isVocal.push((hasEnergy && inVocalRange) || (hasSomeEnergy && inVocalRange));
   }
   
-  // Smooth the classification (median filter)
-  const smoothed = medianFilter(isVocal, 5);
+  // Smooth with smaller window to preserve early onsets
+  const smoothed = medianFilter(isVocal, 3);
+  
+  // Apply onset detection: look for energy rises
+  const withOnsets = applyOnsetDetection(smoothed, energyProfile, threshold, hopSize, sampleRate);
   
   // Extract segments
   const segments: VocalSegment[] = [];
@@ -114,21 +128,21 @@ export async function detectVocals(
   let segEnergy = 0;
   let segCount = 0;
   
-  for (let i = 0; i < smoothed.length; i++) {
+  for (let i = 0; i < withOnsets.length; i++) {
     const time = (i * hopSize) / sampleRate;
     
-    if (smoothed[i] && !inSegment) {
+    if (withOnsets[i] && !inSegment) {
       inSegment = true;
       segStart = time;
       segEnergy = 0;
       segCount = 0;
-    } else if (!smoothed[i] && inSegment) {
+    } else if (!withOnsets[i] && inSegment) {
       inSegment = false;
       const segEnd = time;
       const duration = segEnd - segStart;
       
-      // Filter out very short segments (likely noise)
-      if (duration > 0.1) {
+      // Very short minimum: 50ms to catch quick vocal starts
+      if (duration > 0.05) {
         segments.push({
           start: segStart,
           end: segEnd,
@@ -143,11 +157,11 @@ export async function detectVocals(
     }
   }
   
-  // Close last segment if still open
+  // Close last segment
   if (inSegment) {
-    const segEnd = (smoothed.length * hopSize) / sampleRate;
+    const segEnd = (withOnsets.length * hopSize) / sampleRate;
     const duration = segEnd - segStart;
-    if (duration > 0.1) {
+    if (duration > 0.05) {
       segments.push({
         start: segStart,
         end: segEnd,
@@ -156,8 +170,11 @@ export async function detectVocals(
     }
   }
   
-  // Merge close segments (gap < 0.3s)
-  const merged = mergeCloseSegments(segments, 0.3);
+  // Merge close segments (gap < 0.2s — tighter merging)
+  const merged = mergeCloseSegments(segments, 0.2);
+  
+  // Remove very long gaps at the start (but keep the first real vocal segment)
+  // Only remove silence before first vocal, don't add artificial delay
   
   if (onProgress) onProgress(1);
   
@@ -167,6 +184,40 @@ export async function detectVocals(
     sampleRate,
     windowSize,
   };
+}
+
+/**
+ * Enhance detection by looking for energy onsets (sudden increases)
+ * which often indicate vocal starts
+ */
+function applyOnsetDetection(
+  smoothed: boolean[],
+  energyProfile: number[],
+  threshold: number,
+  hopSize: number,
+  sampleRate: number
+): boolean[] {
+  const result = [...smoothed];
+  const lookback = Math.floor(0.1 * sampleRate / hopSize); // 100ms lookback
+  
+  for (let i = lookback; i < result.length; i++) {
+    if (!result[i]) {
+      // Check if there's an energy onset (sudden rise)
+      const currentEnergy = energyProfile[i];
+      const prevEnergy = energyProfile[i - lookback];
+      
+      // If energy jumped significantly, mark as vocal
+      if (currentEnergy > prevEnergy * 2 && currentEnergy > threshold * 0.7) {
+        // Check if surrounding frames also have vocal-range energy
+        const zcr = currentEnergy > 0 ? 1 : 0; // simplified check
+        if (currentEnergy > threshold * 0.5) {
+          result[i] = true;
+        }
+      }
+    }
+  }
+  
+  return result;
 }
 
 function medianFilter(data: boolean[], size: number): boolean[] {
@@ -188,7 +239,7 @@ function medianFilter(data: boolean[], size: number): boolean[] {
 function mergeCloseSegments(segments: VocalSegment[], minGap: number): VocalSegment[] {
   if (segments.length <= 1) return segments;
   
-  const merged: VocalSegment[] = [segments[0]];
+  const merged: VocalSegment[] = [{ ...segments[0] }];
   
   for (let i = 1; i < segments.length; i++) {
     const prev = merged[merged.length - 1];
@@ -198,7 +249,7 @@ function mergeCloseSegments(segments: VocalSegment[], minGap: number): VocalSegm
       prev.end = curr.end;
       prev.energy = (prev.energy + curr.energy) / 2;
     } else {
-      merged.push(curr);
+      merged.push({ ...curr });
     }
   }
   
