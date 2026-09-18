@@ -23,8 +23,8 @@ class PitchExtractor:
     def _load_model(self):
         """Загрузить модель CREPE."""
         if self.model is None:
-            import crepe
-            self.model = crepe.model.CREPE()
+            import torchcrepe
+            self.model = torchcrepe.model.CREPE()
             self.model.load(model_capacity=CREPE_MODEL_CAPACITY)
     
     def extract(
@@ -42,7 +42,7 @@ class PitchExtractor:
         Returns:
             (frequencies_hz, confidence) - массивы с шагом CREPE_STEP_SIZE_MS
         """
-        import crepe
+        import torchcrepe
         import librosa
         
         # Загружаем аудио
@@ -52,7 +52,7 @@ class PitchExtractor:
             progress_callback(0.1)
         
         # Предсказываем pitch
-        f0, confidence = crepe.predict(
+        f0, confidence = torchcrepe.predict(
             audio,
             sr=SAMPLE_RATE,
             viterbi=True,
