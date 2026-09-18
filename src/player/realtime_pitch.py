@@ -30,8 +30,8 @@ class RealtimePitchDetector:
     def _load_model(self):
         """Загрузить модель CREPE."""
         if self.model is None:
-            import crepe
-            from crepe.model import CREPE
+            import torchcrepe
+            from torchcrepe.model import CREPE
             self.model = CREPE()
             self.model.load(model_capacity="full" if self.use_gpu else "tiny")
     
@@ -77,9 +77,9 @@ class RealtimePitchDetector:
     
     def _detect_crepe(self, audio_block: np.ndarray) -> tuple:
         """Определить pitch через CREPE."""
-        import crepe
+        import torchcrepe
         
-        f0, confidence = crepe.predict(
+        f0, confidence = torchcrepe.predict(
             audio_block,
             sr=SAMPLE_RATE,
             viterbi=False,
